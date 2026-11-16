@@ -4,6 +4,8 @@
 // Mode 2 (assisted teleoperation)  -> GUI "Manual Cartesian control"   (ControlMode::VELOCITY_MANUAL)
 // Mode 1 (autonomous inspection)   -> GUI "Velocity point-to-point"     (ControlMode::VELOCITY_P2P)
 //
+// Version 0.6: + scene drawn in RViz (/cern_scene): tunnel, magnet-like equipment, KR16 on a parked
+//              vehicle, keep-out planes and funnel turning red while they act, defects, camera footprint
 // Version 0.5: + Option A: virtual fixtures generated automatically from the inspection report
 //              (target pose, approach funnel, keep-out zone, depth stop, guidance) for Mode 2,
 //              + E3 simulated operator (ASSIST=none|static|fixtures OPERATOR=sim TRIALS=10)
@@ -33,6 +35,8 @@
 #include <algorithm>
 #include <random>
 #include <sstream>
+#include <rclcpp/rclcpp.hpp>
+#include <visualization_msgs/msg/marker_array.hpp>
 
 using namespace std;
 using namespace ecn;
@@ -848,6 +852,297 @@ struct SimOperator
     }
 };
 
+// ================= Scene drawn in RViz (v0.6) =================
+// Display only: the control above does not use these shapes. Frame: base_link (RViz fixed frame).
+// In RViz: Add -> By topic -> /cern_scene -> MarkerArray
+// Scenario: the KR16 is mounted on a vehicle parked in a tunnel, in front of a magnet-like piece of
+// equipment whose flat end face is the inspected face (plane x = X_FACE).
+using visualization_msgs::msg::Marker;
+using visualization_msgs::msg::MarkerArray;
+
+const double EQ_RADIUS{0.5}, EQ_LENGTH{2.5}, EQ_Z{1.15};   // equipment cylinder, axis along x, end face at X_FACE
+const double FLOOR_Z{-0.60};                                // tunnel floor (robot base on the vehicle at z = 0)
+const double RED_HOLD{0.4};                                 // [s] a constraint stays red this long after acting
+
+struct DefectMarker
+{
+    string id;
+    vpTranslationVector est, truth;
+    bool hasTruth{false};
+};
+
+// all defects of the inspection report (estimate and, in simulation, true position)
+vector<DefectMarker> loadDefects(const string &file)
+{
+    vector<DefectMarker> out;
+    ifstream in(file);
+    if(!in)
+        return out;
+    stringstream ss;
+    ss << in.rdbuf();
+    const string js{ss.str()};
+    const auto readVec = [&js](const size_t start, vpTranslationVector &v)
+    {
+        const char *c{js.c_str() + js.find('[', start) + 1};
+        char *end;
+        for(unsigned i = 0; i < 3; ++i)
+        {
+            v[i] = strtod(c, &end);
+            c = end + 1;
+        }
+    };
+    size_t pos{js.find("\"defects\"")};
+    if(pos == string::npos)
+        return out;
+    while((pos = js.find("\"id\": \"", pos)) != string::npos)
+    {
+        pos += 7;
+        DefectMarker d;
+        d.id = js.substr(pos, js.find('"', pos) - pos);
+        const size_t next{js.find("\"id\"", pos)};
+        const size_t pp{js.find("\"position\"", pos)}, pt{js.find("\"sim_truth\"", pos)};
+        if(pp == string::npos || pp > next)
+            break;
+        readVec(pp, d.est);
+        d.hasTruth = pt != string::npos && pt < next;
+        if(d.hasTruth)
+            readVec(pt, d.truth);
+        out.push_back(d);
+    }
+    return out;
+}
+
+struct Scene
+{
+    rclcpp::Node::SharedPtr node{std::make_shared<rclcpp::Node>("cern_scene")};
+    rclcpp::Publisher<MarkerArray>::SharedPtr pub{node->create_publisher<MarkerArray>("cern_scene", 10)};
+    vector<DefectMarker> defects;
+    double tWallRed{-1e9}, tFloorRed{-1e9}, tFunnelRed{-1e9};
+
+    static Marker make(const int id, const string &ns, const int type)
+    {
+        Marker m;
+        m.header.frame_id = "base_link";
+        m.ns = ns;
+        m.id = id;
+        m.type = type;
+        m.action = Marker::ADD;
+        m.pose.orientation.w = 1.;
+        m.scale.x = m.scale.y = m.scale.z = 1.;
+        m.color.a = 1.;
+        return m;
+    }
+    static void place(Marker &m, const double x, const double y, const double z)
+    {
+        m.pose.position.x = x;
+        m.pose.position.y = y;
+        m.pose.position.z = z;
+    }
+    static void size(Marker &m, const double x, const double y, const double z)
+    {
+        m.scale.x = x;
+        m.scale.y = y;
+        m.scale.z = z;
+    }
+    static void paint(Marker &m, const double r, const double g, const double b, const double a)
+    {
+        m.color.r = r;
+        m.color.g = g;
+        m.color.b = b;
+        m.color.a = a;
+    }
+    static geometry_msgs::msg::Point point(const double x, const double y, const double z)
+    {
+        geometry_msgs::msg::Point p;
+        p.x = x;
+        p.y = y;
+        p.z = z;
+        return p;
+    }
+
+    // remembers which constraints are currently slowing the robot (drawn in red)
+    void flag(const double t, const SafetyInfo &info, const vpTranslationVector &p)
+    {
+        if(info.active || info.stop)
+        {
+            if(p[2] - planes[0].d0 < D_INFLUENCE)
+                tFloorRed = t;
+            if(X_FACE - p[0] < D_INFLUENCE)
+                tWallRed = t;
+        }
+        if(info.fixture)
+            tFunnelRed = t;
+    }
+
+    void publish(const double t, const vpHomogeneousMatrix &M, const bool teleop, const bool inspect,
+                 const Assist assist, const Fixture &fixture, const Inspection &insp, const SimOperator &op)
+    {
+        MarkerArray arr;
+        const double s45{sqrt(0.5)};
+
+        // ---- static environment: tunnel, equipment, vehicle ----
+        Marker floor{make(0, "tunnel", Marker::CUBE)};
+        place(floor, 1.5, 0., FLOOR_Z - 0.02);
+        size(floor, 8., 5., 0.04);
+        paint(floor, 0.55, 0.55, 0.55, 1.);
+        arr.markers.push_back(floor);
+        for(int k = 0; k < 2; ++k)
+        {
+            Marker wall{make(1 + k, "tunnel", Marker::CUBE)};
+            place(wall, 1.5, k == 0 ? -2.5 : 2.5, FLOOR_Z + 1.5);
+            size(wall, 8., 0.05, 3.);
+            paint(wall, 0.85, 0.82, 0.72, 0.25);
+            arr.markers.push_back(wall);
+        }
+
+        Marker eq{make(3, "equipment", Marker::CYLINDER)};      // cylinder axis z rotated onto x
+        place(eq, X_FACE + EQ_LENGTH / 2., 0., EQ_Z);
+        eq.pose.orientation.y = s45;
+        eq.pose.orientation.w = s45;
+        size(eq, 2. * EQ_RADIUS, 2. * EQ_RADIUS, EQ_LENGTH);
+        paint(eq, 0.17, 0.42, 0.69, 1.);
+        arr.markers.push_back(eq);
+        const double hSup{EQ_Z - EQ_RADIUS - FLOOR_Z};
+        for(int k = 0; k < 2; ++k)
+        {
+            Marker sup{make(4 + k, "equipment", Marker::CUBE)};
+            place(sup, X_FACE + (k == 0 ? 0.5 : EQ_LENGTH - 0.4), 0., FLOOR_Z + hSup / 2.);
+            size(sup, 0.3, 0.6, hSup);
+            paint(sup, 0.35, 0.35, 0.35, 1.);
+            arr.markers.push_back(sup);
+        }
+
+        Marker body{make(6, "vehicle", Marker::CUBE)};
+        place(body, -0.15, 0., -0.25);
+        size(body, 1.1, 0.8, 0.5);
+        paint(body, 0.95, 0.75, 0.10, 1.);
+        arr.markers.push_back(body);
+        int id{7};
+        for(const double wx: {-0.50, 0.20})
+            for(const double wy: {-0.44, 0.44})
+            {
+                Marker wheel{make(id++, "vehicle", Marker::CYLINDER)};   // axis along y
+                place(wheel, wx, wy, FLOOR_Z + 0.15);
+                wheel.pose.orientation.x = s45;
+                wheel.pose.orientation.w = s45;
+                size(wheel, 0.30, 0.30, 0.08);
+                paint(wheel, 0.08, 0.08, 0.08, 1.);
+                arr.markers.push_back(wheel);
+            }
+
+        // ---- keep-out planes (red while the damper slows the robot) ----
+        const bool wallRed{t - tWallRed < RED_HOLD}, floorRed{t - tFloorRed < RED_HOLD};
+        Marker wallZone{make(11, "keep-out", Marker::CUBE)};
+        place(wallZone, X_FACE - 0.005, 0., EQ_Z + 0.1);
+        size(wallZone, 0.01, 2.0, 1.3);
+        paint(wallZone, wallRed ? 1. : 1., wallRed ? 0.1 : 0.85, wallRed ? 0.1 : 0.2,
+              assist == Assist::NONE ? 0. : (wallRed ? 0.45 : 0.10));
+        arr.markers.push_back(wallZone);
+        Marker floorZone{make(12, "keep-out", Marker::CUBE)};
+        place(floorZone, 1.05, 0., planes[0].d0);
+        size(floorZone, 0.9, 2.0, 0.01);
+        paint(floorZone, 1., floorRed ? 0.1 : 0.85, floorRed ? 0.1 : 0.2,
+              assist == Assist::NONE ? 0. : (floorRed ? 0.45 : 0.10));
+        arr.markers.push_back(floorZone);
+
+        // ---- inspection: planned raster on the face, live camera footprint ----
+        Marker raster{make(13, "inspection", Marker::LINE_STRIP)};
+        raster.scale.x = 0.004;
+        paint(raster, 1., 1., 1., 0.7);
+        int row{0};
+        for(double z = Z_MIN; z <= Z_MAX + 1e-6; z += ROW_STEP, ++row)
+        {
+            raster.points.push_back(point(X_FACE - 0.003, row % 2 == 0 ? Y_MIN : Y_MAX, z));
+            raster.points.push_back(point(X_FACE - 0.003, row % 2 == 0 ? Y_MAX : Y_MIN, z));
+        }
+        arr.markers.push_back(raster);
+
+        Marker foot{make(14, "inspection", Marker::LINE_STRIP)};
+        foot.scale.x = 0.005;
+        const vpTranslationVector p{M.getTranslationVector()};
+        const double zx{M[0][2]};
+        const bool showFoot{inspect && insp.phase == Phase::SCAN && zx > 0.1};
+        const double dist{showFoot ? (X_FACE - p[0]) / zx : 0.1};
+        const double cy{p[1] + dist * M[1][2]}, cz{p[2] + dist * M[2][2]}, rad{dist * tan(FOV_HALF)};
+        for(int k = 0; k <= 36; ++k)
+            foot.points.push_back(point(X_FACE - 0.005, cy + rad * cos(k * M_PI / 18.), cz + rad * sin(k * M_PI / 18.)));
+        paint(foot, 0.1, 0.9, 1., showFoot ? 0.9 : 0.);
+        arr.markers.push_back(foot);
+
+        // ---- defects from the inspection report: true (red) and estimated (orange) ----
+        for(size_t k = 0; k < defects.size(); ++k)
+        {
+            if(defects[k].hasTruth)
+            {
+                Marker tr{make(100 + static_cast<int>(k), "defects", Marker::SPHERE)};
+                place(tr, X_FACE - 0.004, defects[k].truth[1], defects[k].truth[2]);
+                size(tr, 0.02, 0.02, 0.02);
+                paint(tr, 0.9, 0.05, 0.05, 1.);
+                arr.markers.push_back(tr);
+            }
+            Marker es{make(200 + static_cast<int>(k), "defects", Marker::SPHERE)};
+            place(es, X_FACE - 0.006, defects[k].est[1], defects[k].est[2]);
+            size(es, 0.035, 0.035, 0.035);
+            paint(es, 1., 0.55, 0., 0.45);
+            arr.markers.push_back(es);
+        }
+
+        // ---- generated fixture: funnel (green, red while it constrains the motion) and target ----
+        if(fixture.valid)
+        {
+            const bool funnelRed{t - tFunnelRed < RED_HOLD};
+            Marker funnel{make(15, "fixture", Marker::TRIANGLE_LIST)};
+            vpTranslationVector ex, ey;
+            for(unsigned i = 0; i < 3; ++i) {ex[i] = fixture.Rt[i][0]; ey[i] = fixture.Rt[i][1];}
+            const auto ring = [&](const double s, const double a)
+            {
+                const vpTranslationVector q{fixture.defect + fixture.n * s
+                                            + (ex * cos(a) + ey * sin(a)) * fixture.radius(s)};
+                return point(q[0], q[1], q[2]);
+            };
+            const int nSeg{32};
+            for(int k = 0; k < nSeg; ++k)
+            {
+                const double a0{2. * M_PI * k / nSeg}, a1{2. * M_PI * (k + 1) / nSeg};
+                const auto p00{ring(D_WORK, a0)}, p01{ring(D_WORK, a1)}, p10{ring(S_NEAR, a0)}, p11{ring(S_NEAR, a1)};
+                funnel.points.insert(funnel.points.end(), {p00, p10, p11, p00, p11, p01});
+            }
+            paint(funnel, funnelRed ? 1. : 0.18, funnelRed ? 0.15 : 0.80, funnelRed ? 0.15 : 0.44,
+                  assist == Assist::FIXTURES ? (funnelRed ? 0.55 : 0.35) : 0.12);
+            arr.markers.push_back(funnel);
+
+            Marker tgt{make(16, "fixture", Marker::SPHERE)};
+            place(tgt, fixture.target[0], fixture.target[1], fixture.target[2]);
+            size(tgt, 0.015, 0.015, 0.015);
+            paint(tgt, 0.1, 0.9, 0.3, 1.);
+            arr.markers.push_back(tgt);
+        }
+
+        // ---- status text ----
+        Marker txt{make(17, "status", Marker::TEXT_VIEW_FACING)};
+        place(txt, 0.6, 0., 2.1);
+        txt.scale.z = 0.09;
+        paint(txt, 1., 1., 1., 1.);
+        ostringstream os;
+        if(inspect)
+            os << "Mode 1 - autonomous inspection ("
+               << (insp.phase == Phase::APPROACH ? "approach" : insp.phase == Phase::SCAN ? "scanning" : "done")
+               << ", " << insp.photos << " photos)";
+        else if(teleop)
+        {
+            os << "Mode 2 - teleoperation, assistance: " << assistName(assist);
+            if(op.enabled)
+                os << " (simulated operator, trial " << std::min(op.trial + 1, op.nTrials) << "/" << op.nTrials << ")";
+        }
+        else
+            os << "Idle - select a velocity mode in the GUI";
+        txt.text = os.str();
+        arr.markers.push_back(txt);
+
+        pub->publish(arr);
+    }
+};
+
 // ============================ Logging ============================
 // time stamp used in the log names
 string timeStamp()
@@ -901,10 +1196,12 @@ int main(int argc, char ** argv)
 
     // ---- Option A: virtual fixtures from the latest inspection report ----
     const string target{envString("TARGET")};     // defect id, e.g. TARGET=D2 (default: first defect)
+    Scene scene;        // v0.6: scene drawn in RViz
     Fixture fixture;    // built from the inspection estimate: used for the assistance
     Fixture evalFix;    // built from the simulated true defect: used by the simulated operator and the E3 metrics
     const auto loadFixture = [&]()
     {
+        scene.defects = loadDefects(dir + "/inspection_latest.json");
         if(fixture.load(dir + "/inspection_latest.json", target))
         {
             evalFix = fixture;
@@ -1054,6 +1351,7 @@ int main(int argc, char ** argv)
         if(info.stop && !prevStop)
             cout << "ANTI-COLLISION STOP (d = " << info.dmin << " m)" << endl;
         prevStop = info.stop;
+        scene.flag(t, info, M.getTranslationVector());
 
         double sigmaMin{0.}, lambda{0.}, velScale{1.};
         if((teleop || inspect) && !jointReset)
@@ -1097,6 +1395,9 @@ int main(int argc, char ** argv)
             robot->displayFrame(vpHomogeneousMatrix(fixture.target, fixture.Rt), "fixture_target");
             robot->displayFrame(vpHomogeneousMatrix(fixture.entry, fixture.Rt), "fixture_entry");
         }
+
+        if(cycle % 8 == 0)
+            scene.publish(t, M, teleop, inspect, assist, fixture, insp, op);
 
         // ---- log one line per cycle ----
         log << t - tStart << "," << static_cast<int>(robot->mode());
