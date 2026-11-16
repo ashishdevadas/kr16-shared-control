@@ -17,6 +17,7 @@ In simulated repair trials, operators guided by the generated fixtures reached t
 - [Build and run](#build-and-run)
 - [Reproduce the figures](#reproduce-the-figures)
 - [Repository layout](#repository-layout)
+- [Related work](#related-work)
 - [Limitations](#limitations)
 - [Credits and references](#credits-and-references)
 
@@ -156,6 +157,12 @@ scripts/                    analysis scripts (Python, NumPy, Matplotlib)
 results/                    figures and result tables
 results/data/               logged runs used by the figures
 ```
+
+## Related work
+
+Generating virtual fixtures automatically is not new in itself. Fixtures have been built from streaming point clouds ([Advanced Robotics, 2014](https://www.ingentaconnect.com/content/tandf/arb/2014/00000028/00000022/art00003)), from stereo pose estimation ([vision-based generation](https://core.ac.uk/works/151760542)), from intra-operative 3D images ([Shi et al., 2024](https://doaj.org/article/82dcfd088d8e404ba444b25799d65d0d)) and from uncertain visual detections ([Mühlbauer et al., 2025](https://arxiv.org/abs/2506.10239)). They have also been composed by the operator from scene features ([Pruks and Ryu, 2022](https://journals.sagepub.com/doi/abs/10.1177/02783649221102980)). Closest to this project, [Regal et al. (2023)](https://arxiv.org/abs/2311.00988) turn corrosion detected by a mobile manipulator into surface-offset fixtures for an **autonomous** coating repair.
+
+What this project adds is the link and its evaluation in a CERN-style workflow. The inspection pass of the same arm produces forbidden-region and guidance fixtures for a **human-teleoperated** repair, under one safety layer shared with the inspection. The result is compared with no assistance and with static safety zones, on paired trials. It is an application and integration contribution, not a new way to compute a fixture, and the literature search was not exhaustive.
 
 ## Limitations
 
