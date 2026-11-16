@@ -1,4 +1,4 @@
-| Condition | Trials | Position error [mm] | Lateral [mm] | |Depth| [mm] | Orientation [deg] | Keep-out intrusion [mm] | Trials with intrusion | Closest to face [mm] | Time [s] | Success |
+| Condition | Trials | Position error [mm] | Lateral [mm] | Abs. depth [mm] | Orientation [deg] | Keep-out intrusion [mm] | Trials with intrusion | Closest to face [mm] | Time [s] | Success |
 |---|---|---|---|---|---|---|---|---|---|---|
 | No assistance | 10 | 16.83 ± 7.17 | 10.28 ± 4.85 | 12.30 ± 7.55 | 4.98 ± 1.44 | 6.47 ± 5.84 | 10/10 | -3.7 (min) | 12.98 ± 6.08 | 0/10 |
 | Static keep-out planes | 10 | 15.18 ± 7.57 | 10.06 ± 4.38 | 10.58 ± 7.56 | 4.32 ± 1.47 | 5.96 ± 4.30 | 9/10 | 20.0 (min) | 22.36 ± 16.54 | 0/10 |

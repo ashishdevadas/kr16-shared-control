@@ -57,7 +57,7 @@ for k in COND:
 def ms(x):
     return f"{x.mean():.2f} ± {x.std(ddof=1) if len(x) > 1 else 0:.2f}"
 
-head = ["Condition", "Trials", "Position error [mm]", "Lateral [mm]", "|Depth| [mm]", "Orientation [deg]",
+head = ["Condition", "Trials", "Position error [mm]", "Lateral [mm]", "Abs. depth [mm]", "Orientation [deg]",
         "Keep-out intrusion [mm]", "Trials with intrusion", "Closest to face [mm]", "Time [s]", "Success"]
 md = "| " + " | ".join(head) + " |\n|" + "---|" * len(head) + "\n"
 for k in COND:
