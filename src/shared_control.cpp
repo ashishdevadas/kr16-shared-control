@@ -7,6 +7,7 @@
 // Version 0.5: + Option A: virtual fixtures generated automatically from the inspection report
 //              (target pose, approach funnel, keep-out zone, depth stop, guidance) for Mode 2,
 //              + E3 simulated operator (ASSIST=none|static|fixtures OPERATOR=sim TRIALS=10)
+//              0.5.1: with OPERATOR=sim, both GUI velocity modes run the trials (no scan)
 // Version 0.4: + Mode 1 autonomous inspection scan of the equipment front face
 //              (raster scan, simulated camera, defect localisation, inspection report JSON)
 //              0.4.1: camera tilt 30 deg (wrist margin), integral action along the raster
@@ -981,8 +982,12 @@ int main(int argc, char ** argv)
         fvOp = 0;
         fv = 0;
         vCommand = 0;
-        const bool teleop{robot->mode() == ControlMode::VELOCITY_MANUAL};
-        const bool inspect{robot->mode() == ControlMode::VELOCITY_P2P};
+        // with the simulated operator, both velocity modes of the GUI run the E3 trials (no scan)
+        const bool teleop{robot->mode() == ControlMode::VELOCITY_MANUAL ||
+                          (op.enabled && robot->mode() == ControlMode::VELOCITY_P2P)};
+        const bool inspect{robot->mode() == ControlMode::VELOCITY_P2P && !op.enabled};
+        if(op.enabled && !teleop && cycle % 300 == 1)
+            cout << "[E3] waiting: select 'Manual Cartesian control' in the GUI" << endl;
         bool jointReset{false};
         FixtureState fst;
 

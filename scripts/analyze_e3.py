@@ -50,6 +50,8 @@ for k in COND:
                "e_depth": num("e_depth_mm"), "e_rot": num("e_rot_deg"), "intrusion": num("intrusion_mm"),
                "face": num("face_min_mm"), "success": num("success")}
     print(f"{k:9s}: {files[k]}  ({len(rows)} trials)")
+    if len(rows) == 0:
+        sys.exit(f"No finished trial in {files[k]}: run ASSIST={k} OPERATOR=sim again and wait for the summary")
 
 # ---------------- results table ----------------
 def ms(x):
@@ -107,7 +109,7 @@ for a, k in zip(ax, COND):
     if os.path.exists(run):
         c, rows = load(run)
         a_run = np.array([[float(r[c["trial"]]), float(r[c["op_stage"]]), float(r[c["s_axis"]]),
-                           float(r[c["rho"]])] for r in rows if r[c["mode"]] == "1"])
+                           float(r[c["rho"]])] for r in rows if r[c["op_stage"]] in ("1", "2")]).reshape(-1, 4)
         for tr in np.unique(a_run[:, 0]):
             m = (a_run[:, 0] == tr) & (a_run[:, 1] >= 1) & (a_run[:, 1] <= 2) & (a_run[:, 2] < 0.3)
             a.plot(a_run[m, 2] * 1000, a_run[m, 3] * 1000, color=COLOR[k], lw=0.9, alpha=0.8)
