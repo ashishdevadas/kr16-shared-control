@@ -1,0 +1,10 @@
+{
+  "version": "0.4",
+  "run": "20261116_145238",
+  "component": {"name": "equipment front face", "plane_x": 1.50000, "normal": [-1, 0, 0]},
+  "scan": {"rows": 4, "standoff_m": 0.25000, "tilt_deg": 30.00000, "region_y": [-0.30000, 0.30000], "region_z": [1.00000, 1.30000], "duration_s": 54.03415, "photos": 106},
+  "defects": [
+    {"id": "D1", "position": [1.50000, 0.11979, 1.17006], "normal": [-1, 0, 0], "std_m": [0.00073, 0.00064], "detections": 10, "sim_truth": [1.50000, 0.12000, 1.17000], "sim_error_m": 0.00022},
+    {"id": "D2", "position": [1.50000, -0.20088, 1.04022], "normal": [-1, 0, 0], "std_m": [0.00086, 0.00087], "detections": 12, "sim_truth": [1.50000, -0.20000, 1.04000], "sim_error_m": 0.00091}
+  ]
+}

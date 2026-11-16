@@ -1,0 +1,11 @@
+{
+  "version": "0.5",
+  "defect_id": "D1",
+  "defect_position": [1.50000, 0.11979, 1.17006],
+  "face_normal": [-1.00000, 0.00000, 0.00000],
+  "target_position": [1.47000, 0.11979, 1.17006],
+  "target_tool_z": [1.00000, -0.00000, -0.00000],
+  "funnel": {"entry_position": [1.35000, 0.11979, 1.17006], "radius_tip_m": 0.01000, "radius_entry_m": 0.06000, "near_zone_m": 0.15000},
+  "depth_stop_m": 0.03000,
+  "guidance": {"start_m": 0.25000, "lateral_scaling": 0.20000, "axis_gain": 1.50000, "orientation_gain": 1.50000}
+}

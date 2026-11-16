@@ -1,9 +1,9 @@
 <?xml version="1.0"?>
 <package format="3">
   <name>cern_shared_control</name>
-  <version>0.1.0</version>
+  <version>0.5.1</version>
   <description>Shared-control framework for safe robotic inspection and intervention in CERN-like environments: autonomous inspection and assisted teleoperation with a common safety layer, on the ecn_manip KUKA KR16 simulator.</description>
-  <maintainer email="your.email@example.com">Ashish Devadas</maintainer>
+  <maintainer email="ashishdevadas00@gmail.com">Ashish Devadas</maintainer>
   <license>MIT</license>
 
   <buildtool_depend>ament_cmake</buildtool_depend>
