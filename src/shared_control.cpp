@@ -977,6 +977,8 @@ struct Scene
     void publish(const double t, const vpHomogeneousMatrix &M, const bool teleop, const bool inspect,
                  const Assist assist, const Fixture &fixture, const Inspection &insp, const SimOperator &op)
     {
+        (void)teleop;   // kept in the interface for a future status display
+        (void)op;
         MarkerArray arr;
         const double s45{sqrt(0.5)};
 
@@ -1118,27 +1120,7 @@ struct Scene
             arr.markers.push_back(tgt);
         }
 
-        // ---- status text ----
-        Marker txt{make(17, "status", Marker::TEXT_VIEW_FACING)};
-        place(txt, 0.6, 0., 2.1);
-        txt.scale.z = 0.09;
-        paint(txt, 1., 1., 1., 1.);
-        ostringstream os;
-        if(inspect)
-            os << "Mode 1 - autonomous inspection ("
-               << (insp.phase == Phase::APPROACH ? "approach" : insp.phase == Phase::SCAN ? "scanning" : "done")
-               << ", " << insp.photos << " photos)";
-        else if(teleop)
-        {
-            os << "Mode 2 - teleoperation, assistance: " << assistName(assist);
-            if(op.enabled)
-                os << " (simulated operator, trial " << std::min(op.trial + 1, op.nTrials) << "/" << op.nTrials << ")";
-        }
-        else
-            os << "Idle - select a velocity mode in the GUI";
-        txt.text = os.str();
-        arr.markers.push_back(txt);
-
+        // (no status text: RViz draws the spaces of text markers far too wide; the GUI shows the mode)
         pub->publish(arr);
     }
 };
