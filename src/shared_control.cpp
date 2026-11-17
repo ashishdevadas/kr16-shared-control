@@ -4,6 +4,13 @@
 // Mode 2 (assisted teleoperation)  -> GUI "Manual Cartesian control"   (ControlMode::VELOCITY_MANUAL)
 // Mode 1 (autonomous inspection)   -> GUI "Velocity point-to-point"     (ControlMode::VELOCITY_P2P)
 //
+// Version 0.7: + human trials (OPERATOR=human): a participant drives the robot with the keyboard window
+//              (scripts/cern_teleop.py) through /operator/twist, trial control on /trial/cmd, status on
+//              /trial/status; practice trials, varied start poses, one CSV per participant and condition
+//              0.7.1: operator readout in every condition (depth, side offset and angle to the green target,
+//              like a range sensor on the tool; HUD=0 to hide it)
+//              0.7.2: the target changes every trial (defects of the inspection report in turn: D1, D2, ...),
+//              same sequence in every condition; TARGET=D1 keeps a single target
 // Version 0.6: + scene drawn in RViz (/cern_scene): tunnel, magnet-like equipment, KR16 on a parked
 //              vehicle, keep-out planes and funnel turning red while they act, defects, camera footprint
 // Version 0.5: + Option A: virtual fixtures generated automatically from the inspection report
@@ -23,6 +30,8 @@
 //   DLS=0                                        plain pseudo-inverse instead of damped least squares
 //   TARGET=D2                                    defect used for the fixtures (default: first defect)
 //   OPERATOR=sim TRIALS=10                       E3: simulated operator instead of the GUI sliders
+//   OPERATOR=human PARTICIPANT=P01 TRIALS=5 PRACTICE=1 [TIMEOUT=90 LABEL="Condition 1 of 3"]
+//                                                human trial: keyboard operator (scripts/cern_teleop.py)
 
 #include <ecn_manip/robot_init.h>
 #include <filesystem>
@@ -37,6 +46,9 @@
 #include <sstream>
 #include <rclcpp/rclcpp.hpp>
 #include <visualization_msgs/msg/marker_array.hpp>
+#include <geometry_msgs/msg/twist.hpp>
+#include <std_msgs/msg/string.hpp>
+#include <chrono>
 
 using namespace std;
 using namespace ecn;
@@ -684,6 +696,10 @@ const double SIGMA_LAT{0.008}, SIGMA_DEPTH{0.015};  // [m]  perception bias
 const double SIGMA_ROT{3. * M_PI / 180.};           // [rad]
 const double PRE{0.20}, OVERSHOOT{0.03}, OP_TIMEOUT{45.};
 const double J_GAIN{1.5}, J_VMAX{0.6};              // joint-space reset between trials
+// human trials (v0.7)
+const double H_TIMEOUT{90.};                        // [s] default trial time limit
+const double H_VMAX{0.06}, H_WMAX{0.40};            // [m/s], [rad/s] cap on the keyboard command
+const double H_STALE{0.3};                          // [s] keyboard command older than this -> zero
 
 struct TrialMetrics
 {
@@ -695,7 +711,15 @@ struct SimOperator
 {
     bool enabled{false};
     int nTrials{10}, trial{0};
-    int stage{0};           // 0 joint-space reset to the start pose, 1 pre-approach, 2 insertion, 3 finished
+    int stage{0};           // 0 joint-space reset to the start pose, 1 pre-approach (human: driving),
+                            // 2 insertion, 3 finished, 4 human: ready, waiting for SPACE
+    bool human{false};      // v0.7: keyboard operator instead of the simulated one
+    int practice{0};        // first trials of each condition not counted (human)
+    double timeout{OP_TIMEOUT};
+    string participant{"sim"}, label;
+    vector<vpColVector> qStarts;    // start configuration of each trial (cycled)
+    vector<string> targetIds;       // defect used in each trial (cycled, human: D1, D2, ...)
+    string targetId() const {return targetIds.empty() ? "" : targetIds[trial % targetIds.size()];}
     bool overshoot{false};
     vpColVector qStart;
     vpTranslationVector pHat, pCheck, pPrev;
@@ -710,8 +734,12 @@ struct SimOperator
     string assist;
 
     // joint-space P control towards the start configuration (not part of the evaluation)
+    bool isPractice() const {return trial < practice;}
+
     vpColVector reset(const vpColVector &q, const double t, const Fixture &fx)
     {
+        if(!qStarts.empty())
+            qStart = qStarts[trial % qStarts.size()];
         vpColVector qd{(qStart - q) * J_GAIN};
         double emax{0.};
         for(unsigned i = 0; i < qd.size(); ++i)
@@ -726,6 +754,17 @@ struct SimOperator
 
     void startTrial(const double t, const Fixture &fx)
     {
+        if(human)
+        {
+            // the robot holds the start pose until the participant presses SPACE
+            m = TrialMetrics();
+            stage = 4;
+            tOp = tStage = t;
+            cout << "[Human] " << (isPractice() ? "practice trial " : "trial ") << trialNumber() << "/"
+                 << (isPractice() ? practice : nTrials - practice) << " ready: press SPACE in the keyboard window"
+                 << endl;
+            return;
+        }
         gen.seed(1000 + trial);
         // perception bias: lateral (tool x and y axes of the target frame) and depth (along n)
         vpTranslationVector ex, ey;
@@ -742,15 +781,12 @@ struct SimOperator
         cout << "[E3] trial " << trial + 1 << "/" << nTrials << " started" << endl;
     }
 
-    // operator twist (fixed frame)
-    vpColVector command(const vpHomogeneousMatrix &M, const double t, const double dt, const Fixture &fx)
-    {
-        vpColVector fv(6);
-        if(stage != 1 && stage != 2)
-            return fv;
-        const vpTranslationVector p{M.getTranslationVector()};
+    // trial number shown to the participant (practice and measured trials counted separately)
+    int trialNumber() const {return isPractice() ? trial + 1 : trial - practice + 1;}
 
-        // metrics along the trial
+    // metrics along the trial
+    void track(const vpTranslationVector &p, const double t, const Fixture &fx)
+    {
         vpTranslationVector lat;
         const FixtureState st{fx.state(p, lat)};
         if(t > tOp)
@@ -758,6 +794,48 @@ struct SimOperator
         pPrev = p;
         m.intrusion = std::max(m.intrusion, st.intrusion);
         m.faceMin = std::min(m.faceMin, st.s);
+    }
+
+    // human: SPACE pressed while ready -> the trial clock starts
+    void humanStart(const vpHomogeneousMatrix &M, const double t)
+    {
+        if(stage != 4)
+            return;
+        stage = 1;
+        tOp = tStage = t;
+        pPrev = M.getTranslationVector();
+        cout << "[Human] go" << endl;
+    }
+
+    // human: keyboard twist (fixed frame), the trial ends on ENTER (done) or on the time limit
+    vpColVector humanCommand(const vpHomogeneousMatrix &M, const double t, const Fixture &fx,
+                             const vpColVector &key, const bool done)
+    {
+        vpColVector fv(6);
+        if(stage != 1)
+            return fv;
+        track(M.getTranslationVector(), t, fx);
+        fv = key;
+        saturate(fv, 0, H_VMAX);
+        saturate(fv, 3, H_WMAX);
+        if(done || t - tOp > timeout)
+        {
+            if(!done)
+                cout << "[Human] time limit reached" << endl;
+            finish(M, t, fx);
+            return vpColVector(6);
+        }
+        return fv;
+    }
+
+    // operator twist (fixed frame)
+    vpColVector command(const vpHomogeneousMatrix &M, const double t, const double dt, const Fixture &fx)
+    {
+        vpColVector fv(6);
+        if(stage != 1 && stage != 2)
+            return fv;
+        const vpTranslationVector p{M.getTranslationVector()};
+        track(p, t, fx);
 
         // coloured noise
         const double a{exp(-std::max(dt, 1e-4) / OP_TAU)};
@@ -811,11 +889,14 @@ struct SimOperator
         const vpThetaUVector tu{M.getRotationMatrix() * fx.Rt.t()};
         m.eRot = sqrt(tu[0]*tu[0] + tu[1]*tu[1] + tu[2]*tu[2]) * 180. / M_PI;
         m.success = m.ePos < 0.005 && m.eRot < 3. && m.intrusion < 0.001 && m.faceMin > 0.;
-        results.push_back(m);
+        if(!isPractice())
+            results.push_back(m);
         out << trial + 1 << "," << assist << "," << m.time << "," << 1000*m.ePos << "," << 1000*m.eLat << ","
             << 1000*m.eDepth << "," << m.eRot << "," << 1000*m.intrusion << "," << 1000*m.faceMin << ","
-            << m.path << "," << m.success << endl;
-        cout << fixed << setprecision(1) << "[E3] trial " << trial + 1 << ": time " << m.time << " s, error "
+            << m.path << "," << m.success << "," << isPractice() << "," << participant << "," << targetId() << endl;
+        cout << fixed << setprecision(1) << (human ? "[Human] " : "[E3] ")
+             << (isPractice() ? "practice trial " : "trial ") << trialNumber() << " (" << targetId() << "): time "
+             << m.time << " s, error "
              << 1000*m.ePos << " mm (lat " << 1000*m.eLat << ", depth " << 1000*m.eDepth << "), rot "
              << m.eRot << " deg, intrusion " << 1000*m.intrusion << " mm, closest to face "
              << 1000*m.faceMin << " mm, " << (m.success ? "SUCCESS" : "fail") << endl;
@@ -824,6 +905,23 @@ struct SimOperator
         stage = trial < nTrials ? 0 : 3;
         if(stage == 3)
             summary();
+    }
+
+    // one line for the participant's keyboard window: "STATE|text" (+ "|depth|side|angle" readout)
+    string status(const double t, const string &hud = "") const
+    {
+        const string head{label.empty() ? "" : label + "  -  "};
+        const string tr{string(isPractice() ? "Practice trial " : "Trial ") + to_string(trialNumber()) + " of "
+                        + to_string(isPractice() ? practice : nTrials - practice)
+                        + (targetIds.size() > 1 ? "  -  target " + targetId() : "")};
+        switch(stage)
+        {
+        case 0: return "WAIT|" + head + "Moving to the start pose, please wait...";
+        case 4: return "READY|" + head + tr + "  -  press SPACE to start" + hud;
+        case 1: return "GO|" + head + tr + "  -  " + to_string(static_cast<int>(t - tOp))
+                       + " s  -  press ENTER when the tool is on the green target" + hud;
+        default: return "DONE|" + head + "Condition finished - thank you! Please fill in the questionnaire.";
+        }
     }
 
     void summary() const
@@ -843,6 +941,8 @@ struct SimOperator
         stats([](const TrialMetrics &r){return 1000*r.intrusion;}, mi, si);
         int ok{0}, intr{0};
         for(const auto &r: results) {ok += r.success; intr += r.intrusion > 0.001;}
+        if(results.empty())
+            return;
         cout << fixed << setprecision(2) << "[E3] ===== " << assist << ": " << results.size() << " trials =====\n"
              << "[E3] time " << mt << " +- " << st << " s | position error " << me << " +- " << se
              << " mm | orientation error " << mr << " +- " << sr << " deg\n"
@@ -978,7 +1078,6 @@ struct Scene
                  const Assist assist, const Fixture &fixture, const Inspection &insp, const SimOperator &op)
     {
         (void)teleop;   // kept in the interface for a future status display
-        (void)op;
         MarkerArray arr;
         const double s45{sqrt(0.5)};
 
@@ -1038,13 +1137,13 @@ struct Scene
         place(wallZone, X_FACE - 0.005, 0., EQ_Z + 0.1);
         size(wallZone, 0.01, 2.0, 1.3);
         paint(wallZone, wallRed ? 1. : 1., wallRed ? 0.1 : 0.85, wallRed ? 0.1 : 0.2,
-              assist == Assist::NONE ? 0. : (wallRed ? 0.45 : 0.10));
+              assist == Assist::NONE ? 0. : (wallRed ? 0.75 : 0.10));
         arr.markers.push_back(wallZone);
         Marker floorZone{make(12, "keep-out", Marker::CUBE)};
         place(floorZone, 1.05, 0., planes[0].d0);
         size(floorZone, 0.9, 2.0, 0.01);
         paint(floorZone, 1., floorRed ? 0.1 : 0.85, floorRed ? 0.1 : 0.2,
-              assist == Assist::NONE ? 0. : (floorRed ? 0.45 : 0.10));
+              assist == Assist::NONE ? 0. : (floorRed ? 0.75 : 0.10));
         arr.markers.push_back(floorZone);
 
         // ---- inspection: planned raster on the face, live camera footprint ----
@@ -1110,7 +1209,7 @@ struct Scene
                 funnel.points.insert(funnel.points.end(), {p00, p10, p11, p00, p11, p01});
             }
             paint(funnel, funnelRed ? 1. : 0.18, funnelRed ? 0.15 : 0.80, funnelRed ? 0.15 : 0.44,
-                  assist == Assist::FIXTURES ? (funnelRed ? 0.55 : 0.35) : 0.12);
+                  assist == Assist::FIXTURES ? (funnelRed ? 0.80 : 0.35) : (op.human ? 0. : 0.12));
             arr.markers.push_back(funnel);
 
             Marker tgt{make(16, "fixture", Marker::SPHERE)};
@@ -1199,35 +1298,133 @@ int main(int argc, char ** argv)
     };
     loadFixture();
 
-    // ---- E3: simulated operator (OPERATOR=sim TRIALS=10) ----
+    // ---- E3: simulated operator (OPERATOR=sim TRIALS=10) or human trial (OPERATOR=human, v0.7) ----
     SimOperator op;
-    op.enabled = envString("OPERATOR") == "sim";
+    vector<Fixture> fixAll, evalAll;    // one fixture per target (v0.7.2), the active one is copied to fixture
+    size_t activeTarget{0};
+    const string opEnv{envString("OPERATOR")};
+    op.human = opEnv == "human";
+    op.enabled = opEnv == "sim" || op.human;
+    string runPath{dir + "/run_" + stamp + ".csv"};
     if(op.enabled)
     {
         if(!fixture.valid)
         {
-            cout << "[E3] the simulated operator needs a target: run Mode 1 first" << endl;
+            cout << "[E3] the operator needs a target: run Mode 1 (inspection scan) first" << endl;
             return 1;
         }
-        op.nTrials = std::max(1, atoi(envString("TRIALS", "10").c_str()));
-        op.overshoot = assist == Assist::FIXTURES;
         op.assist = assistName(assist);
-        // start pose: 0.35 m in front of the target, offset sideways, camera orientation of the scan;
-        // start configuration from the inverse geometry (elbow-down branch, same for every trial)
-        const vpTranslationVector pStart{fixture.target + fixture.n * 0.35 + vpTranslationVector(0., 0.10, 0.06)};
+        // targets: sim -> the fixture target only; human -> every defect of the report in turn (at most 3, so
+        // the 6 start poses always pair with the same target), unless TARGET is given
+        fixAll = {fixture};
+        evalAll = {evalFix};
+        if(op.human && target.empty())
+        {
+            fixAll.clear();
+            evalAll.clear();
+            for(const auto &d: scene.defects)
+            {
+                Fixture f;
+                if(fixAll.size() < 3 && f.load(dir + "/inspection_latest.json", d.id))
+                {
+                    Fixture e{f};
+                    if(f.hasTruth)
+                        e.build(f.id, f.truth, f.n);
+                    fixAll.push_back(f);
+                    evalAll.push_back(e);
+                }
+            }
+        }
+        for(const auto &f: fixAll)
+            op.targetIds.push_back(f.id);
         vpColVector qHint(n);
         qHint[1] = -0.2; qHint[2] = -1.2; qHint[4] = 1.6; qHint[5] = 3.1;
-        op.qStart = robot->inverseGeometry(vpHomogeneousMatrix(pStart, scanRotation()), qHint);
-        op.out.open(dir + "/e3_" + op.assist + "_" + stamp + ".csv");
-        op.out << "trial,assist,time_s,e_pos_mm,e_lat_mm,e_depth_mm,e_rot_deg,intrusion_mm,face_min_mm,path_m,success"
-               << endl;
+        // start poses: in front of the target, offset sideways, camera orientation of the scan;
+        // start configurations from the inverse geometry (elbow-down branch)
+        // sim: one start pose for every trial; human: a different start pose per trial (same list in every
+        // condition, so the conditions stay paired), the participant cannot learn one fixed motion
+        vector<vpTranslationVector> offsets{vpTranslationVector(0., 0.10, 0.06)};
+        if(op.human)
+            offsets = {vpTranslationVector(0., 0.10, 0.06), vpTranslationVector(0., -0.10, 0.06),
+                       vpTranslationVector(0., 0.12, -0.05), vpTranslationVector(0., -0.12, -0.05),
+                       vpTranslationVector(0., 0.00, 0.12), vpTranslationVector(0., 0.08, 0.00)};
+        for(size_t k = 0; k < offsets.size(); ++k)
+        {
+            const Fixture &f{fixAll[k % fixAll.size()]};
+            const vpTranslationVector pStart{f.target + f.n * 0.35 + offsets[k]};
+            op.qStarts.push_back(robot->inverseGeometry(vpHomogeneousMatrix(pStart, scanRotation()), qHint));
+        }
+        op.qStart = op.qStarts[0];
+
+        string csv{dir + "/e3_" + op.assist + "_" + stamp + ".csv"};
+        if(op.human)
+        {
+            op.participant = envString("PARTICIPANT", "P00");
+            op.practice = std::max(0, atoi(envString("PRACTICE", "1").c_str()));
+            op.nTrials = op.practice + std::max(1, atoi(envString("TRIALS", "5").c_str()));
+            op.timeout = std::max(10., atof(envString("TIMEOUT", to_string(H_TIMEOUT)).c_str()));
+            op.label = envString("LABEL");
+            const string hdir{dir + "/human"};
+            filesystem::create_directories(hdir);
+            const string base{hdir + "/" + op.participant + "_" + op.assist + "_" + stamp};
+            csv = base + ".csv";
+            runPath = base + "_run.csv";
+            cout << "[Human] participant " << op.participant << ", " << op.practice << " practice + "
+                 << op.nTrials - op.practice << " trials, limit " << op.timeout << " s per trial, targets";
+            for(const auto &id: op.targetIds)
+                cout << " " << id;
+            cout << " in turn\n"
+                 << "[Human] start the keyboard window: ros2 run cern_shared_control cern_teleop.py\n"
+                 << "[Human] select 'Manual Cartesian control' in the GUI" << endl;
+        }
+        else
+        {
+            op.nTrials = std::max(1, atoi(envString("TRIALS", "10").c_str()));
+            op.overshoot = assist == Assist::FIXTURES;
+            cout << "[E3] simulated operator, " << op.nTrials << " trials, select 'Manual Cartesian control' in the GUI"
+                 << endl;
+        }
+        op.out.open(csv);
+        op.out << "trial,assist,time_s,e_pos_mm,e_lat_mm,e_depth_mm,e_rot_deg,intrusion_mm,face_min_mm,path_m,success,"
+                  "practice,participant,target" << endl;
         op.out << fixed << setprecision(4);
-        cout << "[E3] simulated operator, " << op.nTrials << " trials, select 'Manual Cartesian control' in the GUI"
-             << endl;
+        cout << "Trial results: " << csv << endl;
+    }
+
+    // ---- human trial: keyboard operator interface (v0.7) ----
+    // /operator/twist  (geometry_msgs/Twist, fixed frame base_link, m/s and rad/s)  <- cern_teleop.py
+    // /trial/cmd       (std_msgs/String: "start" | "done")                         <- cern_teleop.py
+    // /trial/status    (std_msgs/String "STATE|text")                               -> cern_teleop.py
+    using Clock = chrono::steady_clock;
+    rclcpp::Node::SharedPtr opNode;
+    rclcpp::Subscription<geometry_msgs::msg::Twist>::SharedPtr twistSub;
+    rclcpp::Subscription<std_msgs::msg::String>::SharedPtr cmdSub;
+    rclcpp::Publisher<std_msgs::msg::String>::SharedPtr statusPub;
+    vpColVector keyTwist(6);
+    Clock::time_point keyStamp{Clock::now() - chrono::hours(1)};
+    bool startReq{false}, doneReq{false};
+    const bool hudOn{envString("HUD") != "0"};
+    if(op.human)
+    {
+        opNode = std::make_shared<rclcpp::Node>("cern_trial");
+        twistSub = opNode->create_subscription<geometry_msgs::msg::Twist>("operator/twist", 10,
+            [&](const geometry_msgs::msg::Twist::SharedPtr msg)
+            {
+                keyTwist[0] = msg->linear.x;  keyTwist[1] = msg->linear.y;  keyTwist[2] = msg->linear.z;
+                keyTwist[3] = msg->angular.x; keyTwist[4] = msg->angular.y; keyTwist[5] = msg->angular.z;
+                keyStamp = Clock::now();
+            });
+        cmdSub = opNode->create_subscription<std_msgs::msg::String>("trial/cmd", 10,
+            [&](const std_msgs::msg::String::SharedPtr msg)
+            {
+                if(msg->data == "start") startReq = true;
+                if(msg->data == "done")  doneReq = true;
+            });
+        statusPub = opNode->create_publisher<std_msgs::msg::String>("trial/status", 10);
     }
 
     // ---- CSV log ----
-    const string path{dir + "/run_" + stamp + ".csv"};
+    const string path{runPath};
     ofstream log(path);
     log << "t,mode";
     for(unsigned i = 0; i < n; ++i) log << ",q" << i+1;
@@ -1241,7 +1438,7 @@ int main(int argc, char ** argv)
     log << fixed << setprecision(5);
     cout << "Logging to " << path << endl;
 
-    double tStart{-1.}, tPrev{0.};
+    double tStart{-1.}, tPrev{0.}, tStatus{-1.}, tDone{-1.};
     bool prevStop{false};
     int cycle{0};
 
@@ -1267,6 +1464,49 @@ int main(int argc, char ** argv)
         const bool inspect{robot->mode() == ControlMode::VELOCITY_P2P && !op.enabled};
         if(op.enabled && !teleop && cycle % 300 == 1)
             cout << "[E3] waiting: select 'Manual Cartesian control' in the GUI" << endl;
+
+        // human trial: keyboard messages, status for the participant's window
+        if(op.human)
+        {
+            // the target of the current trial (fixtures, readout and RViz follow it)
+            const size_t idx{static_cast<size_t>(op.trial) % fixAll.size()};
+            if(idx != activeTarget && op.stage != 3)
+            {
+                fixture = fixAll[idx];
+                evalFix = evalAll[idx];
+                activeTarget = idx;
+            }
+            startReq = doneReq = false;
+            rclcpp::spin_some(opNode);
+            if(chrono::duration<double>(Clock::now() - keyStamp).count() > H_STALE)
+                keyTwist = 0;
+            if(t - tStatus > 0.2)
+            {
+                // operator readout w.r.t. the green target (inspection estimate), same in every condition:
+                // depth along the face normal (> 0: still in front), side offset, angle to the target frame
+                string hud;
+                if(hudOn)
+                {
+                    const vpTranslationVector e{M.getTranslationVector() - fixture.target};
+                    const double depth{dot3(e, fixture.n)};
+                    const vpThetaUVector tu{M.getRotationMatrix() * fixture.Rt.t()};
+                    ostringstream h;
+                    h << fixed << setprecision(0) << "|" << 1000*depth << "|" << 1000*norm3(e - fixture.n * depth)
+                      << "|" << setprecision(1) << sqrt(tu[0]*tu[0] + tu[1]*tu[1] + tu[2]*tu[2]) * 180. / M_PI;
+                    hud = h.str();
+                }
+                std_msgs::msg::String msg;
+                msg.data = teleop || op.stage == 3 ? op.status(t, hud)
+                                                   : "WAIT|Experimenter: select 'Manual Cartesian control' in the GUI";
+                statusPub->publish(msg);
+                tStatus = t;
+            }
+            // all trials done: keep publishing the final status for 1.5 s, then save and quit
+            if(op.stage == 3 && tDone < 0)
+                tDone = t;
+            if(tDone >= 0 && t - tDone > 1.5)
+                break;
+        }
         bool jointReset{false};
         FixtureState fst;
 
@@ -1279,6 +1519,12 @@ int main(int argc, char ** argv)
                 {
                     vCommand = op.reset(q, t, evalFix);
                     jointReset = true;
+                }
+                else if(op.human)
+                {
+                    if(startReq)
+                        op.humanStart(M, t);
+                    fvOp = op.humanCommand(M, t, evalFix, keyTwist, doneReq);
                 }
                 else
                     fvOp = op.command(M, t, dt, evalFix);
@@ -1397,4 +1643,13 @@ int main(int argc, char ** argv)
             << (op.enabled ? op.stage : -1) << "," << std::min(fst.s, 9.) << "," << fst.rho << ","
             << fst.intrusion << "," << fst.w << "," << info.fixture << endl;
     }
+
+    // end of the run (human trial finished or Ctrl+C): the files are complete; quit without the ROS/ecn_manip
+    // teardown
+    // (it can abort with "free(): invalid pointer", which would only alarm the participant)
+    log.close();
+    op.out.close();
+    cout << (op.human ? "[Human] all trials saved: " : "Log saved: ") << path << endl;
+    cout.flush();
+    std::_Exit(0);
 }

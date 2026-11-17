@@ -1,7 +1,7 @@
 <?xml version="1.0"?>
 <package format="3">
   <name>cern_shared_control</name>
-  <version>0.6.0</version>
+  <version>0.7.2</version>
   <description>Shared-control framework for safe robotic inspection and intervention in CERN-like environments: autonomous inspection and assisted teleoperation with a common safety layer, on the ecn_manip KUKA KR16 simulator.</description>
   <maintainer email="ashishdevadas00@gmail.com">Ashish Devadas</maintainer>
   <license>MIT</license>
@@ -12,6 +12,10 @@
   <depend>rclcpp</depend>
   <depend>ecn_manip</depend>
   <depend>visualization_msgs</depend>
+  <depend>geometry_msgs</depend>
+  <depend>std_msgs</depend>
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>python_qt_binding</exec_depend>
 
   <export>
     <build_type>ament_cmake</build_type>

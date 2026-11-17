@@ -17,4 +17,7 @@ ament_auto_add_executable(shared_control
 target_include_directories(shared_control PUBLIC ${VISP_INCLUDE_DIRS})
 target_link_libraries(shared_control ${VISP_LIBRARIES})
 
+# keyboard window for the human trials (v0.7): ros2 run cern_shared_control cern_teleop.py
+install(PROGRAMS scripts/cern_teleop.py DESTINATION lib/${PROJECT_NAME})
+
 ament_auto_package()

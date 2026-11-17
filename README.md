@@ -138,7 +138,21 @@ In the GUI, **Velocity point-to-point** runs Mode 1, the inspection scan. **Manu
 | `TARGET=D2` | Defect used for the fixtures (default: the first defect) |
 | `OPERATOR=sim TRIALS=10` | E3: simulated operator instead of the GUI sliders |
 
+| `OPERATOR=human PARTICIPANT=P01 TRIALS=5 PRACTICE=1` | Human trial: a participant drives with the keyboard window (`TIMEOUT=90`, `LABEL=...` optional) |
+
 Example, E3 with fixtures: `ASSIST=fixtures OPERATOR=sim TRIALS=10 ros2 run cern_shared_control shared_control`
+
+## Human trials (v0.7)
+
+The same comparison as E3, with real people instead of the simulated operator. Each participant does all 3 conditions in a counterbalanced order: 1 practice trial and 5 measured trials per condition, from 6 different start poses, with the target alternating between the inspected defects (D1, D2, …), then a NASA-TLX workload questionnaire. The protocol is in [`docs/human_study_protocol.md`](docs/human_study_protocol.md) and the consent form in [`docs/consent_form.md`](docs/consent_form.md).
+
+```bash
+# once: simulator running, inspection scan done (Mode 1), GUI on "Manual Cartesian control"
+python3 scripts/run_session.py P01      # one participant: questions, keyboard window, 3 conditions, NASA-TLX
+python3 scripts/analyze_human.py        # after all participants: Friedman + Wilcoxon, figures in results/
+```
+
+The keyboard window (`ros2 run cern_shared_control cern_teleop.py`, started by the runner) publishes the operator twist in the fixed frame. Hold a key to move: W/S forward/back, A/D left/right, R/F up/down, I/K pitch, J/L yaw, U/O roll, 1/2 fine/normal speed, SPACE starts a trial and ENTER ends it. It also shows a readout of the depth, side offset and angle to the green target, identical in all conditions (`HUD=0` hides it). Topics: `/operator/twist`, `/trial/cmd`, `/trial/status`. Data go to `~/cern_logs/human/`.
 
 ## Reproduce the figures
 
@@ -146,6 +160,7 @@ Example, E3 with fixtures: `ASSIST=fixtures OPERATOR=sim TRIALS=10 ros2 run cern
 python3 scripts/analyze_e1_e2.py   # E1 and E2, from results/data/
 python3 scripts/analyze_scan.py    # inspection scan, from the latest Mode 1 log
 python3 scripts/analyze_e3.py      # E3, from the latest e3_<condition>_*.csv files
+python3 scripts/analyze_human.py   # human trials, from ~/cern_logs/human/
 ```
 
 ## Repository layout
@@ -153,7 +168,8 @@ python3 scripts/analyze_e3.py      # E3, from the latest e3_<condition>_*.csv fi
 ```
 src/shared_control.cpp      controller: Mode 1, Mode 2, fixture generator, safety layer, DLS, simulated operator, logging
 src/robot_*.cpp             robot models (my MANIP lab implementations, built on ecn_manip)
-scripts/                    analysis scripts (Python, NumPy, Matplotlib)
+scripts/                    analysis scripts (Python, NumPy, Matplotlib), human-trial runner and keyboard window
+docs/                       human study protocol and consent form
 results/                    figures and result tables
 results/data/               logged runs used by the figures
 ```
@@ -171,7 +187,7 @@ What this project adds is the link and its evaluation in a CERN-style workflow. 
 - **Simulated operator in E3:** part of the fixture gain is built into the design. The fixture defines the target and automates the orientation, which is why the orientation error is 0.0°. Trials with human operators are the next step.
 - **No haptic feedback:** the fixtures act on the commanded velocity (GUI input), not through a haptic master arm.
 - **Simple geometry:** keep-out zones are planes and a funnel, not CAD geometry, and the inspected face is flat.
-- **Known issue:** a `free()` error can appear on Ctrl+C during shutdown. The logs are complete; it is still being investigated.
+- **Shutdown:** since v0.7 the node saves its files and exits directly at the end of a run, which should avoid the `free()` error seen on Ctrl+C in earlier versions.
 
 ## Credits and references
 
