@@ -56,6 +56,12 @@ flowchart LR
 
 <img width="640" height="366" alt="scan_preview (1)" src="https://github.com/user-attachments/assets/4a9d7fbf-fe20-4565-b976-288d8bd5350f" />
 
+Videos
+
+### Autonomous inspection scan
+
+The KR16, mounted on a vehicle in the tunnel, scans the end face of the equipment row by row with its simulated camera (cyan footprint) and locates the two hidden defects D1 and D2. The scan part is sped up ×2.
+
 
 ## Results
 
