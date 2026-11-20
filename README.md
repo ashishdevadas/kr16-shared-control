@@ -33,6 +33,11 @@ CERN uses robots to inspect and repair equipment in radioactive areas: more than
 
 CERN's own presentations name the needs this project addresses: moving "from standard teleoperation to shared controls", anticollision and virtual fixtures, and less dependence on highly trained operators [[1]](#credits-and-references), [[2]](#credits-and-references). This project connects the two phases. **The inspection result becomes the operator's guidance.**
 
+
+https://github.com/user-attachments/assets/f95fb932-5b7f-41b9-9881-a6271b663bc7
+
+
+
 ## What it does
 
 ```mermaid
