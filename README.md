@@ -320,5 +320,4 @@ Built on [**ecn_manip**](https://github.com/oKermorgant/ecn_manip) by Olivier Ke
 
 MIT licence, see [LICENSE](LICENSE).
 
-https://github.com/user-attachments/assets/3f9939e8-4555-4939-a980-5c147330c4bb
 
